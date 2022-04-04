@@ -31,7 +31,7 @@ You can get these variables from [RapidAPI website](https://rapidapi.com/fixer/a
 Clone the project
 
 ```bash
-  git clone https://link-to-project
+  git clone https://github.com/beketm/TelegramBotExchangeRate
 ```
 
 Go to the project directory
