@@ -130,7 +130,7 @@ public class ExchangeRates {
             throw new RuntimeException("n cannot be larger than 365");
         }
 
-        int defaultNumberToSubtract = isTodaysDateInAPI() ? 1 : 0;
+        int defaultNumberToSubtract = isTodaysDateInAPI() ? 0 : 1;
 
         LocalDate nDaysAgoDate = LocalDate.now().minusDays(n+defaultNumberToSubtract);
         TreeMap<String, Map<String, Double>> output = new TreeMap<>();

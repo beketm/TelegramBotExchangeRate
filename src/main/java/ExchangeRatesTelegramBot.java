@@ -1,4 +1,5 @@
 import io.github.cdimascio.dotenv.Dotenv;
+import org.json.JSONObject;
 import org.telegram.telegrambots.bots.DefaultBotOptions;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
@@ -10,6 +11,13 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 
 import static java.util.Arrays.*;
@@ -21,6 +29,7 @@ public class ExchangeRatesTelegramBot extends TelegramLongPollingBot {
     private static String BOT_USERNAME = "";
 
     private final ExchangeRates exchangeRates = new ExchangeRates();
+    private final FileUtil fileUtil = new FileUtil();
     private List<String> currencies = asList("USD", "EUR", "RUB");
     private List<String> currencyEmojis = asList("\ue50c", "\ud83c\uddea\ud83c\uddfa", "\ue512");
 
@@ -36,6 +45,12 @@ public class ExchangeRatesTelegramBot extends TelegramLongPollingBot {
     }
 
     public void onUpdateReceived(Update update){
+        long chatId = update.hasMessage()
+                ? update.getMessage().getChat().getId()
+                : update.getCallbackQuery().getMessage().getChat().getId();
+
+        fileUtil.writeChatId(chatId);
+
         if (update.hasMessage() && update.getMessage().hasText()) {
             String message_text = update.getMessage().getText();
             long chat_id = update.getMessage().getChatId();
@@ -47,10 +62,14 @@ public class ExchangeRatesTelegramBot extends TelegramLongPollingBot {
 
             askCurrency(chat_id);
 
+            System.out.println(LocalDateTime.now()+": " + update.getMessage().getChat().getUserName() + " started bot");
 
         }else if (update.hasCallbackQuery()){
             printCurrencyRates(update);
+            System.out.println(LocalDateTime.now()+": " + update.getCallbackQuery().getMessage().getChat().getUserName() + " requested currency rate");
+
         }
+
 
     }
 
@@ -60,7 +79,8 @@ public class ExchangeRatesTelegramBot extends TelegramLongPollingBot {
         long chat_id = update.getCallbackQuery().getMessage().getChatId();
         String messageString = "";
 
-        Map<String, Map<String, Double>> last10daysRates = exchangeRates.getLast10DaysRates();
+
+        Map<String, Map<String, Double>> last10daysRates = makeAPICall();
 
         for(Map.Entry<String, Map<String, Double>> entry: last10daysRates.entrySet()){
             messageString += formatDate(entry.getKey()) + ": 1 " + call_data + " = " + String.format("%.2f", entry.getValue().get(call_data)) + " KZT\n";
@@ -126,11 +146,105 @@ public class ExchangeRatesTelegramBot extends TelegramLongPollingBot {
         }
     }
 
+    public Map<String, Map<String, Double>> makeAPICall() {
+        TreeMap<String, Map<String, Double>> currencyRates = new TreeMap<>();
+        JSONObject jsonResponse = getResponse("https://spring-boot-exchange-rates.herokuapp.com/last10days");
+
+        if (jsonResponse == null ) {
+            throw new RuntimeException("We were not able to connect to API");
+        }
+
+//        if (!jsonResponse.getBoolean("success")) {
+//            throw new RuntimeException("Received unsuccessful response from API");
+//        }
+
+        Iterator<String> keysItr = jsonResponse.keys();
+        while (keysItr.hasNext()){
+            String key = keysItr.next();
+            JSONObject value = jsonResponse.getJSONObject(key);
+
+            Iterator<String> currenciesKeysItr = value.keys();
+            Map<String, Double> rates = new HashMap<>(3);
+
+            while (currenciesKeysItr.hasNext()){
+                String currenciesKey = currenciesKeysItr.next();
+                Double rate = value.getDouble(currenciesKey);
+                rates.put(currenciesKey, rate);
+            }
+
+            currencyRates.put(key, rates);
+        }
+
+        return currencyRates;
+    }
+
+    private static JSONObject getResponse(String urlLink) {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(urlLink))
+                .method("GET", HttpRequest.BodyPublishers.noBody())
+                .build();
+
+        HttpResponse<String> response = null;
+
+        JSONObject jsonObject = null;
+        try {
+            response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+            jsonObject = new JSONObject(response.body());
+        } catch (IOException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        return jsonObject;
+    }
+
 
     public static void main(String[] args) throws TelegramApiException {
         ExchangeRatesTelegramBot bot = new ExchangeRatesTelegramBot();
         TelegramBotsApi telegramBotsApi = new TelegramBotsApi(DefaultBotSession.class);
         telegramBotsApi.registerBot(bot);
+
+        Timer timer = new Timer ();
+        TimerTask t = new TimerTask () {
+            @Override
+            public void run () {
+                String text = generateText();
+                if (!"".equals(text)) {
+                    for (Long chatId : new FileUtil().getChatIds()) {
+                        SendMessage ad = new SendMessage();
+                        ad.setChatId(String.valueOf(chatId));
+                        ad.setText(text);
+                        try {
+                            bot.execute(ad);
+                        } catch (TelegramApiException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }
+
+            public String generateText(){
+                String text = "";
+                JSONObject jsonResponse = getResponse("https://spring-boot-exchange-rates.herokuapp.com/rates-change");
+
+                if (jsonResponse.getInt("success") == 1){
+                    if (!jsonResponse.isNull ("USD")){
+                        text += "Доллар изменился на " + String.format("%.2d",jsonResponse.getDouble("USD")*100) + "%%\n";
+                    }
+                    if (!jsonResponse.isNull("EUR")){
+                        text += "Евро изменился на " + String.format("%.2d",jsonResponse.getDouble("EUR")*100) + "%%\n";
+                    }
+                    if (!jsonResponse.isNull("RUB")){
+                        text += "Рубль изменился на " + String.format("%.2d",jsonResponse.getDouble("RUB")*100) + "%%\n";
+                    }
+                }
+
+                return text;
+            }
+        };
+
+        timer.schedule (t, 0l, 1000*60*60*24);
 
     }
 
